@@ -1,20 +1,18 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
-<title>Polygon Growth Physics</title>
+<meta charset="UTF-8">
+<title>Endless Ring Escalation Physics</title>
 <style>
-    html, body {
-        margin: 0;
-        padding: 0;
-        background: #0e0e0e;
-        overflow: hidden;
-    }
-    canvas {
-        display: block;
-        margin: auto;
-        background: #111;
-    }
+html, body {
+    margin: 0;
+    padding: 0;
+    background: #0b0b0b;
+    overflow: hidden;
+}
+canvas {
+    display: block;
+}
 </style>
 </head>
 <body>
@@ -22,18 +20,9 @@
 
 <script>
 /*
-========================================
-CONFIG
-========================================
-*/
-const GRAVITY = 1200;      // px / s^2
-const BALL_RADIUS = 10;
-const BALL_SPEED_RESTORE = true;
-
-/*
-========================================
-CANVAS SETUP
-========================================
+=====================================================
+CANVAS
+=====================================================
 */
 const canvas = document.getElementById("c");
 const ctx = canvas.getContext("2d");
@@ -46,204 +35,227 @@ window.addEventListener("resize", resize);
 resize();
 
 /*
-========================================
-VECTOR UTILITIES
-========================================
+=====================================================
+MATH UTILITIES
+=====================================================
 */
-function dot(a, b) { return a.x * b.x + a.y * b.y; }
-function length(v) { return Math.hypot(v.x, v.y); }
-function normalize(v) {
-    const l = length(v);
-    return l === 0 ? {x:0,y:0} : {x: v.x / l, y: v.y / l};
+const TAU = Math.PI * 2;
+
+function dot(a,b){ return a.x*b.x + a.y*b.y; }
+function len(v){ return Math.hypot(v.x,v.y); }
+function norm(v){
+    const l = len(v);
+    return l === 0 ? {x:0,y:0} : {x:v.x/l,y:v.y/l};
 }
-function sub(a, b) { return {x: a.x - b.x, y: a.y - b.y}; }
-function add(a, b) { return {x: a.x + b.x, y: a.y + b.y}; }
-function mul(v, s) { return {x: v.x * s, y: v.y * s}; }
+function add(a,b){ return {x:a.x+b.x,y:a.y+b.y}; }
+function sub(a,b){ return {x:a.x-b.x,y:a.y-b.y}; }
+function mul(v,s){ return {x:v.x*s,y:v.y*s}; }
 
 /*
-========================================
-POLYGON
-========================================
+=====================================================
+GLOBAL ESCALATION STATE
+=====================================================
 */
-class Polygon {
-    constructor(sides) {
-        this.sides = sides;
-        this.radius = 250;
-        this.center = { x: canvas.width / 2, y: canvas.height / 2 };
-        this.vertices = [];
-        this.rebuild();
-    }
+let cycle = 0;
+let gravityBase = 900;
+let initialSpeedBase = 500;
+let angularSpeed = 0;
+let waveAmplitude = 0;
+let ringThickness = 18;
 
-    rebuild() {
-        this.vertices.length = 0;
-        const step = (Math.PI * 2) / this.sides;
-        for (let i = 0; i < this.sides; i++) {
-            const a = i * step - Math.PI / 2;
-            this.vertices.push({
-                x: this.center.x + Math.cos(a) * this.radius,
-                y: this.center.y + Math.sin(a) * this.radius
-            });
-        }
-    }
-
-    addSide() {
-        this.sides++;
-        this.rebuild();
-    }
-
-    /*
-    Return closest point inside polygon to p.
-    Uses projection against each edge normal.
-    */
-    clampPointInside(p) {
-        let corrected = {...p};
-        for (let i = 0; i < this.vertices.length; i++) {
-            const a = this.vertices[i];
-            const b = this.vertices[(i + 1) % this.vertices.length];
-            const edge = sub(b, a);
-            const normal = normalize({ x: edge.y, y: -edge.x });
-
-            const dist = dot(sub(corrected, a), normal);
-            if (dist > -BALL_RADIUS) {
-                corrected = add(corrected, mul(normal, -dist - BALL_RADIUS));
-            }
-        }
-        return corrected;
-    }
+function applyCycleEscalation() {
+    cycle++;
+    gravityBase *= 1.05;
+    initialSpeedBase *= 1.04;
+    angularSpeed += 0.05;          // radians/sec
+    waveAmplitude += 4;            // px
+    ringThickness *= 0.95;
 }
 
 /*
-========================================
+=====================================================
+RINGS
+=====================================================
+*/
+const RING_COUNT = 15;
+let rings = [];
+let rotation = 0;
+let ringFade = 0;
+
+const center = () => ({ x: canvas.width/2, y: canvas.height/2 });
+
+function regenerateRings() {
+    rings.length = 0;
+    const baseRadius = Math.min(canvas.width, canvas.height) * 0.12;
+    const spacing = ringThickness * 2.2;
+
+    for (let i = 0; i < RING_COUNT; i++) {
+        rings.push({
+            baseRadius: baseRadius + i * spacing,
+            alive: true
+        });
+    }
+    ringFade = 1;
+}
+
+regenerateRings();
+
+/*
+=====================================================
 BALL
-========================================
+=====================================================
 */
-class Ball {
-    constructor() {
-        this.pos = { x: canvas.width / 2, y: canvas.height / 2 };
-        this.vel = { x: 300, y: -200 };
-        this.radius = BALL_RADIUS;
-    }
+const ball = {
+    pos: center(),
+    vel: {x: initialSpeedBase, y: -initialSpeedBase*0.6},
+    r: 8
+};
 
-    speed() {
-        return length(this.vel);
-    }
+function resetBallVelocity() {
+    const angle = Math.random() * TAU;
+    ball.vel = {
+        x: Math.cos(angle) * initialSpeedBase,
+        y: Math.sin(angle) * initialSpeedBase
+    };
 }
 
 /*
-========================================
+=====================================================
 PHYSICS
-========================================
+=====================================================
 */
 function reflectVelocity(v, normal) {
-    // Reflection formula:
-    // v' = v - 2 * (v · n) * n
+    // v' = v - 2(v·n)n
     const d = dot(v, normal);
-    return sub(v, mul(normal, 2 * d));
+    return sub(v, mul(normal, 2*d));
 }
 
-function solveBallPolygonCollision(ball, poly) {
-    let collided = false;
+function collideRings(dt, time) {
+    let hit = false;
+    const c = center();
 
-    for (let i = 0; i < poly.vertices.length; i++) {
-        const a = poly.vertices[i];
-        const b = poly.vertices[(i + 1) % poly.vertices.length];
+    for (let i = rings.length - 1; i >= 0; i--) {
+        if (!rings[i].alive) continue;
 
-        const edge = sub(b, a);
-        const normal = normalize({ x: edge.y, y: -edge.x });
+        const wave = Math.sin(time * 2 + i) * waveAmplitude;
+        const radius = rings[i].baseRadius + wave;
+        const distVec = sub(ball.pos, c);
+        const dist = len(distVec);
 
-        // Signed distance from ball center to wall
-        const dist = dot(sub(ball.pos, a), normal);
+        if (dist + ball.r > radius - ringThickness/2 &&
+            dist - ball.r < radius + ringThickness/2) {
 
-        if (dist > -ball.radius) {
-            // Penetration depth
-            const penetration = dist + ball.radius;
+            // Surface normal (accounts for rotation by rotating space)
+            const normal = norm(distVec);
 
-            // Correct position
-            ball.pos = add(ball.pos, mul(normal, -penetration));
+            // Position correction
+            const penetration = (dist + ball.r) - (radius - ringThickness/2);
+            ball.pos = sub(ball.pos, mul(normal, penetration));
 
             // Reflect velocity
-            const preSpeed = ball.speed();
+            const speedBefore = len(ball.vel);
             ball.vel = reflectVelocity(ball.vel, normal);
 
-            // Restore energy (prevent gradual loss)
-            if (BALL_SPEED_RESTORE) {
-                const postSpeed = ball.speed();
-                if (postSpeed !== 0) {
-                    ball.vel = mul(ball.vel, preSpeed / postSpeed);
-                }
+            // Restore speed to counter gravity losses
+            const speedAfter = len(ball.vel);
+            if (speedAfter !== 0) {
+                ball.vel = mul(ball.vel, speedBefore / speedAfter);
             }
 
-            collided = true;
+            rings[i].alive = false;
+            hit = true;
+            break;
         }
     }
 
-    return collided;
+    if (hit) ringFade = 1;
+}
+
+function ensureInside() {
+    const c = center();
+    const distVec = sub(ball.pos, c);
+    const dist = len(distVec);
+
+    if (rings.every(r => !r.alive)) return;
+
+    const inner = rings.find(r => r.alive);
+    if (!inner) return;
+
+    const radius = inner.baseRadius - ringThickness/2 - ball.r;
+    if (dist > radius) {
+        const n = norm(distVec);
+        const tangent = { x: -n.y, y: n.x };
+        const tangentialSpeed = dot(ball.vel, tangent);
+
+        ball.pos = add(c, mul(n, radius));
+        ball.vel = mul(tangent, tangentialSpeed);
+    }
 }
 
 /*
-========================================
-INIT
-========================================
+=====================================================
+UPDATE & DRAW
+=====================================================
 */
-const polygon = new Polygon(3);
-const ball = new Ball();
+let last = performance.now();
 
-let lastTime = performance.now();
+function update(now) {
+    const dt = Math.min((now - last) / 1000, 0.033);
+    last = now;
 
-/*
-========================================
-LOOP
-========================================
-*/
-function update(dt) {
+    rotation += angularSpeed * dt;
+
     // Gravity
-    ball.vel.y += GRAVITY * dt;
+    ball.vel.y += gravityBase * dt;
 
     // Integrate
-    ball.pos.x += ball.vel.x * dt;
-    ball.pos.y += ball.vel.y * dt;
+    ball.pos = add(ball.pos, mul(ball.vel, dt));
 
-    // Continuous collision resolution (prevents tunneling)
-    let iterations = 0;
-    let hit;
-    do {
-        hit = solveBallPolygonCollision(ball, polygon);
-        if (hit) polygon.addSide();
-        iterations++;
-    } while (hit && iterations < 5);
+    // Collisions
+    collideRings(dt, now/1000);
 
-    // Safety clamp
-    ball.pos = polygon.clampPointInside(ball.pos);
+    // Remove dead rings
+    rings = rings.filter(r => r.alive);
+
+    // Regeneration
+    if (rings.length === 0) {
+        applyCycleEscalation();
+        regenerateRings();
+        resetBallVelocity();
+    }
+
+    ensureInside();
+
+    ringFade = Math.max(0, ringFade - dt * 2);
 }
 
-function draw() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+function draw(now) {
+    ctx.clearRect(0,0,canvas.width,canvas.height);
 
-    // Polygon
-    ctx.strokeStyle = "#66ccff";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    polygon.vertices.forEach((v, i) => {
-        if (i === 0) ctx.moveTo(v.x, v.y);
-        else ctx.lineTo(v.x, v.y);
+    const c = center();
+
+    // Rings
+    rings.forEach((r, i) => {
+        const wave = Math.sin(now*0.002 + i) * waveAmplitude;
+        const radius = r.baseRadius + wave;
+
+        ctx.strokeStyle = `hsla(${(cycle*40+i*10)%360},80%,60%,${0.8+ringFade*0.2})`;
+        ctx.lineWidth = ringThickness;
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, radius, 0, TAU);
+        ctx.stroke();
     });
-    ctx.closePath();
-    ctx.stroke();
 
     // Ball
-    ctx.fillStyle = "#ffcc66";
+    ctx.fillStyle = "#fff";
     ctx.beginPath();
-    ctx.arc(ball.pos.x, ball.pos.y, ball.radius, 0, Math.PI * 2);
+    ctx.arc(ball.pos.x, ball.pos.y, ball.r, 0, TAU);
     ctx.fill();
 }
 
 function loop(now) {
-    const dt = Math.min((now - lastTime) / 1000, 0.033);
-    lastTime = now;
-
-    update(dt);
-    draw();
-
+    update(now);
+    draw(now);
     requestAnimationFrame(loop);
 }
 

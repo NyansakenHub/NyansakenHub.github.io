@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Polygon Growth Physics</title>
+<style>
+    html, body {
+        margin: 0;
+        padding: 0;
+        background: #0e0e0e;
+        overflow: hidden;
+    }
+    canvas {
+        display: block;
+        margin: auto;
+        background: #111;
+    }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<script>
+/*
+========================================
+CONFIG
+========================================
+*/
+const GRAVITY = 1200;      // px / s^2
+const BALL_RADIUS = 10;
+const BALL_SPEED_RESTORE = true;
+
+/*
+========================================
+CANVAS SETUP
+========================================
+*/
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+
+function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+}
+window.addEventListener("resize", resize);
+resize();
+
+/*
+========================================
+VECTOR UTILITIES
+========================================
+*/
+function dot(a, b) { return a.x * b.x + a.y * b.y; }
+function length(v) { return Math.hypot(v.x, v.y); }
+function normalize(v) {
+    const l = length(v);
+    return l === 0 ? {x:0,y:0} : {x: v.x / l, y: v.y / l};
+}
+function sub(a, b) { return {x: a.x - b.x, y: a.y - b.y}; }
+function add(a, b) { return {x: a.x + b.x, y: a.y + b.y}; }
+function mul(v, s) { return {x: v.x * s, y: v.y * s}; }
+
+/*
+========================================
+POLYGON
+========================================
+*/
+class Polygon {
+    constructor(sides) {
+        this.sides = sides;
+        this.radius = 250;
+        this.center = { x: canvas.width / 2, y: canvas.height / 2 };
+        this.vertices = [];
+        this.rebuild();
+    }
+
+    rebuild() {
+        this.vertices.length = 0;
+        const step = (Math.PI * 2) / this.sides;
+        for (let i = 0; i < this.sides; i++) {
+            const a = i * step - Math.PI / 2;
+            this.vertices.push({
+                x: this.center.x + Math.cos(a) * this.radius,
+                y: this.center.y + Math.sin(a) * this.radius
+            });
+        }
+    }
+
+    addSide() {
+        this.sides++;
+        this.rebuild();
+    }
+
+    /*
+    Return closest point inside polygon to p.
+    Uses projection against each edge normal.
+    */
+    clampPointInside(p) {
+        let corrected = {...p};
+        for (let i = 0; i < this.vertices.length; i++) {
+            const a = this.vertices[i];
+            const b = this.vertices[(i + 1) % this.vertices.length];
+            const edge = sub(b, a);
+            const normal = normalize({ x: edge.y, y: -edge.x });
+
+            const dist = dot(sub(corrected, a), normal);
+            if (dist > -BALL_RADIUS) {
+                corrected = add(corrected, mul(normal, -dist - BALL_RADIUS));
+            }
+        }
+        return corrected;
+    }
+}
+
+/*
+========================================
+BALL
+========================================
+*/
+class Ball {
+    constructor() {
+        this.pos = { x: canvas.width / 2, y: canvas.height / 2 };
+        this.vel = { x: 300, y: -200 };
+        this.radius = BALL_RADIUS;
+    }
+
+    speed() {
+        return length(this.vel);
+    }
+}
+
+/*
+========================================
+PHYSICS
+========================================
+*/
+function reflectVelocity(v, normal) {
+    // Reflection formula:
+    // v' = v - 2 * (v · n) * n
+    const d = dot(v, normal);
+    return sub(v, mul(normal, 2 * d));
+}
+
+function solveBallPolygonCollision(ball, poly) {
+    let collided = false;
+
+    for (let i = 0; i < poly.vertices.length; i++) {
+        const a = poly.vertices[i];
+        const b = poly.vertices[(i + 1) % poly.vertices.length];
+
+        const edge = sub(b, a);
+        const normal = normalize({ x: edge.y, y: -edge.x });
+
+        // Signed distance from ball center to wall
+        const dist = dot(sub(ball.pos, a), normal);
+
+        if (dist > -ball.radius) {
+            // Penetration depth
+            const penetration = dist + ball.radius;
+
+            // Correct position
+            ball.pos = add(ball.pos, mul(normal, -penetration));
+
+            // Reflect velocity
+            const preSpeed = ball.speed();
+            ball.vel = reflectVelocity(ball.vel, normal);
+
+            // Restore energy (prevent gradual loss)
+            if (BALL_SPEED_RESTORE) {
+                const postSpeed = ball.speed();
+                if (postSpeed !== 0) {
+                    ball.vel = mul(ball.vel, preSpeed / postSpeed);
+                }
+            }
+
+            collided = true;
+        }
+    }
+
+    return collided;
+}
+
+/*
+========================================
+INIT
+========================================
+*/
+const polygon = new Polygon(3);
+const ball = new Ball();
+
+let lastTime = performance.now();
+
+/*
+========================================
+LOOP
+========================================
+*/
+function update(dt) {
+    // Gravity
+    ball.vel.y += GRAVITY * dt;
+
+    // Integrate
+    ball.pos.x += ball.vel.x * dt;
+    ball.pos.y += ball.vel.y * dt;
+
+    // Continuous collision resolution (prevents tunneling)
+    let iterations = 0;
+    let hit;
+    do {
+        hit = solveBallPolygonCollision(ball, polygon);
+        if (hit) polygon.addSide();
+        iterations++;
+    } while (hit && iterations < 5);
+
+    // Safety clamp
+    ball.pos = polygon.clampPointInside(ball.pos);
+}
+
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Polygon
+    ctx.strokeStyle = "#66ccff";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    polygon.vertices.forEach((v, i) => {
+        if (i === 0) ctx.moveTo(v.x, v.y);
+        else ctx.lineTo(v.x, v.y);
+    });
+    ctx.closePath();
+    ctx.stroke();
+
+    // Ball
+    ctx.fillStyle = "#ffcc66";
+    ctx.beginPath();
+    ctx.arc(ball.pos.x, ball.pos.y, ball.radius, 0, Math.PI * 2);
+    ctx.fill();
+}
+
+function loop(now) {
+    const dt = Math.min((now - lastTime) / 1000, 0.033);
+    lastTime = now;
+
+    update(dt);
+    draw();
+
+    requestAnimationFrame(loop);
+}
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
